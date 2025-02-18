@@ -1,156 +1,183 @@
-import os
 import streamlit as st
-from deep_translator import GoogleTranslator
-from openai import OpenAI
-import glob
-import numpy as np
-import textwrap
+import openai
+from llama_index.llms.openai import OpenAI
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
+from llama_index.core.node_parser import SimpleNodeParser
+import re
+import os
 
-# Initialize OpenAI client with API key from Streamlit secrets
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# Set up the Streamlit page configuration
+st.set_page_config(
+  page_title="Newspaper Bot for CMO by BSPL",
+  page_icon="🦙",
+  layout="centered",
+  initial_sidebar_state="auto"
+)
 
-# Function to load articles from the "news_articles" folder
-def load_articles():
-    articles = []
-    try:
-        for file in glob.glob("news_articles/*.txt"):
-            with open(file, "r", encoding="utf-8") as f:
-                content = f.read()
-                try:
-                    title = content.split("Title: ")[1].split("\n")[0]
-                    date = content.split("Date: ")[1].split("\n")[0]
-                    link = content.split("Link: ")[1].split("\n")[0]
-                    article_content = content.split("Content: ")[1]
-                    articles.append({
-                        "title": title,
-                        "date": date,
-                        "link": link,
-                        "content": article_content
-                    })
-                except IndexError:
-                    st.warning(f"Could not parse file: {file}")
-    except Exception as e:
-        st.error(f"Error loading articles: {e}")
-    return articles
+# Initialize OpenAI API key
+openai.api_key = st.secrets.get("openai_key", None)
+if not openai.api_key:
+  st.error("OpenAI API key is missing. Please add it to the Streamlit secrets.")
+  st.stop()
 
-# Function to chunk text into smaller pieces
-def chunk_text(text, max_chars=2000):
-    return textwrap.wrap(text, max_chars, break_long_words=False)
+st.title("Newpaper Bot for the CMO")
 
-# Function to get embedding using new OpenAI API
-def get_embedding(text):
-    # Truncate text to avoid token limit
-    truncated_text = text[:4000]  # Approximate limit to stay within token bounds
-    response = client.embeddings.create(
-        model="text-embedding-ada-002",
-        input=truncated_text
-    )
-    return response.data[0].embedding
+# Initialize session state for messages and references
+if "messages" not in st.session_state:
+  st.session_state.messages = [
+      {
+          "role": "assistant",
+          "content": "Welcome! I can help you find news related to events happening in the state of Gujrat. Please ask your question!"
+      }
+  ]
 
-# Function to search articles using OpenAI embeddings
-def search_articles(query, articles):
-    try:
-        # Get embedding for the query
-        query_embedding = get_embedding(query)
+if "references" not in st.session_state:
+  st.session_state.references = []
 
-        # Get embeddings for all articles and calculate similarities
-        results = []
-        for article in articles:
-            # Create a summary text combining title and first part of content
-            article_summary = f"{article['title']} {article['content'][:2000]}"
-            article_embedding = get_embedding(article_summary)
+@st.cache_resource(show_spinner=False)
+def load_data():
+  try:
+      node_parser = SimpleNodeParser.from_defaults(
+          chunk_size=2048,  # Increase chunk size to ensure more content is read
+          chunk_overlap=100,  # Adjust overlap to ensure continuity
+      )
+      
+      reader = SimpleDirectoryReader(
+          input_dir="./data",
+          recursive=True,
+          filename_as_id=True
+      )
+      docs = reader.load_data()
+      
+      system_prompt = """You are an authoritative expert on Gujrati News, all your answers have to be in Gujrati. 
+      Your responses should be:
+      1. Comprehensive and detailed
+      2. Give complete news article whenever possible
+      3. Quote relevant sections directly from the Given Data
+      4. Provide specific references Title and Date
+      5. Break down complex news into numbered steps
+      6. Include any relevant timelines or deadlines
+      8. Highlight important caveats or exceptions
 
-            # Calculate similarity
-            similarity = cosine_similarity(query_embedding, article_embedding)
-            if similarity > 0.6:  # Lowered threshold slightly
-                results.append((article, similarity))
+      
+      Always structure your responses in a clear, organized manner using:
+      - Bullet points for lists
+      - Numbered steps for procedures
+      - Bold text for important points
+      - Separate sections with clear headings"""
 
-        # Sort results by similarity
-        results.sort(key=lambda x: x[1], reverse=True)
-        return [r[0] for r in results]
-    except Exception as e:
-        st.error(f"Search error: {e}")
-        return []
+      Settings.llm = OpenAI(
+          model="gpt-4",
+          temperature=0.1,
+          system_prompt=system_prompt,
+      )
+      
+      index = VectorStoreIndex.from_documents(
+          docs,
+          node_parser=node_parser,
+          show_progress=True
+      )
+      return index
+  except Exception as e:
+      st.error(f"Error loading data: {e}")
+      st.stop()
 
-# Function to calculate cosine similarity
-def cosine_similarity(vec1, vec2):
-    dot_product = np.dot(vec1, vec2)
-    norm1 = np.linalg.norm(vec1)
-    norm2 = np.linalg.norm(vec2)
-    return dot_product / (norm1 * norm2)
+def extract_references(text):
+  pattern = r'$Source: ([^,]+), Page (\d+)$'
+  matches = re.finditer(pattern, text)
+  references = []
+  
+  for match in matches:
+      doc_name, page = match.groups()
+      link = f'<a href="data/{doc_name}.pdf#page={page}" target="_blank">[Source: {doc_name}, Page {page}]</a>'
+      text = text.replace(match.group(0), link)
+      references.append((doc_name, page))
+  
+  # Update session state with current references
+  st.session_state.references = list(set(references))  # Use set to avoid duplicate entries
+  return text
 
-# Function to translate Gujarati to English
-def translate_to_english(text):
-    try:
-        # Split text into smaller chunks for translation
-        chunks = chunk_text(text)
-        translated_chunks = []
+def format_response(response):
+  formatted_response = extract_references(response)
+  formatted_response = formatted_response.replace("Step ", "\n### Step ")
+  formatted_response = formatted_response.replace("Note:", "\n> **Note:**")
+  formatted_response = formatted_response.replace("Important:", "\n> **Important:**")
+  return formatted_response
 
-        for chunk in chunks:
-            translated_chunk = GoogleTranslator(source="gujarati", target="english").translate(chunk)
-            translated_chunks.append(translated_chunk)
+def list_reference_documents():
+  try:
+      files = os.listdir('./news_articles')
+      text_files = [f for f in files if f.endswith('.txt')]
+      if text_files:
+          for txt in text_files:
+              doc_name = os.path.splitext(txt)[0]
+              st.markdown(f'- [{doc_name}](./news_articles/{,txt})', unsafe_allow_html=True)
+      else:
+          st.write("No reference documents found.")
+  except Exception as e:
+      st.error(f"Error listing documents: {e}")
 
-        # Join all translated chunks
-        return " ".join(translated_chunks)
-    except Exception as e:
-        st.error(f"Translation failed: {e}")
-        return text
+# Load the index
+index = load_data()
 
-# Streamlit app
-def main():
-    st.title("Gujarati News Search and Translation Bot")
-    st.write("Search for Gujarati news articles and optionally translate them to English.")
+# Initialize chat engine
+if "chat_engine" not in st.session_state:
+  st.session_state.chat_engine = index.as_chat_engine(
+      chat_mode="condense_question",
+      verbose=True
+  )
 
-    # Initialize session state for articles
-    if 'articles' not in st.session_state:
-        st.session_state.articles = load_articles()
+# Sidebar for reference documents
+with st.sidebar:
+  st.header("📚 Reference Documents")
+  st.write("Available reference documents:")
+  list_reference_documents()
+  
+  st.header("🔗 References Used")
+  if st.session_state.references:
+      for doc_name, page in st.session_state.references:
+          st.markdown(f'- [Source: {doc_name}, Page {page}](./data/{doc_name}.pdf#page={page})', unsafe_allow_html=True)
+  else:
+      st.write("No references used yet.")
 
-    # Display the number of loaded articles
-    st.info(f"Loaded {len(st.session_state.articles)} articles")
+# Chat interface
+if prompt := st.chat_input("Ask a question about News in Gujrat"):
+  st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # Add a refresh button
-    if st.button("Refresh Articles"):
-        st.session_state.articles = load_articles()
+# Display chat messages
+for message in st.session_state.messages:
+  with st.chat_message(message["role"]):
+      st.markdown(message["content"], unsafe_allow_html=True)
 
-    # User input for search query
-    query = st.text_input("Enter your search query (in English or Gujarati):")
+# Generate new response
+if st.session_state.messages and st.session_state.messages[-1]["role"] != "assistant":
+  with st.chat_message("assistant"):
+      try:
+          # Get the complete response
+          response = st.session_state.chat_engine.chat(prompt)
+          formatted_response = format_response(response.response)
+          
+          # Display the complete response
+          st.markdown(formatted_response, unsafe_allow_html=True)
+          
+          # Append the response to the message history
+          message = {
+              "role": "assistant",
+              "content": formatted_response
+          }
+          st.session_state.messages.append(message)
+      except Exception as e:
+          st.error(f"Error generating response: {e}")
 
-    if query:
-        with st.spinner('Searching articles...'):
-            # Search articles
-            results = search_articles(query, st.session_state.articles)
-
-        if results:
-            st.write(f"Found {len(results)} relevant articles:")
-            for i, article in enumerate(results):
-                with st.expander(f"{i+1}. {article['title']}"):
-                    st.write(f"**Date:** {article['date']}")
-                    st.write(f"**Link:** [Read more]({article['link']})")
-
-                    # Create two columns for original and translated content
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        st.write("**Original Content:**")
-                        st.write(article['content'])
-
-                    with col2:
-                        st.write("**English Translation:**")
-                        if st.button(f"Translate Article {i+1}", key=f"translate_{i}"):
-                            with st.spinner('Translating...'):
-                                translated_content = translate_to_english(article["content"])
-                                st.write(translated_content)
-        else:
-            st.write("No articles found for your query.")
-
-    # Add footer with information
-    st.markdown("---")
-    st.markdown("""
-    ### About this app
-    - Search through Gujarati news articles
-    - Translate content to English
-    - Powered by OpenAI and Google Translate
-    """)
-
-if __name__ == "__main__":
-    main()
+# Add CSS for better formatting
+st.markdown("""
+<style>
+a {
+  color: #0078ff;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+</style>
+""", unsafe_allow_html=True)
