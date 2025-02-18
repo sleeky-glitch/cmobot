@@ -1,12 +1,12 @@
 import os
 import streamlit as st
 from deep_translator import GoogleTranslator
-import openai
+from openai import OpenAI
 import glob
 import numpy as np
 
 # Initialize OpenAI client with API key from Streamlit secrets
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # Function to load articles from the "news_articles" folder
 def load_articles():
@@ -16,7 +16,6 @@ def load_articles():
         for file in glob.glob("news_articles/*.txt"):
             with open(file, "r", encoding="utf-8") as f:
                 content = f.read()
-                # Extract title, date, link, and content
                 try:
                     title = content.split("Title: ")[1].split("\n")[0]
                     date = content.split("Date: ")[1].split("\n")[0]
@@ -34,13 +33,13 @@ def load_articles():
         st.error(f"Error loading articles: {e}")
     return articles
 
-# Function to get embedding
+# Function to get embedding using new OpenAI API
 def get_embedding(text):
-    response = openai.Embedding.create(
+    response = client.embeddings.create(
         model="text-embedding-ada-002",
         input=text
     )
-    return response['data'][0]['embedding']
+    return response.data[0].embedding
 
 # Function to search articles using OpenAI embeddings
 def search_articles(query, articles):
@@ -90,6 +89,9 @@ def main():
     # Initialize session state for articles
     if 'articles' not in st.session_state:
         st.session_state.articles = load_articles()
+
+    # Display the number of loaded articles
+    st.info(f"Loaded {len(st.session_state.articles)} articles")
 
     # Add a refresh button
     if st.button("Refresh Articles"):
