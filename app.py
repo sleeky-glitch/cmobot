@@ -41,8 +41,8 @@ def translate_text(text, source_lang, target_lang):
 
 # Helper function to extract tags and date from user input
 def extract_tags_and_date(user_input):
-    prompt = f"""Extract relevant search tags and date from the following text.
-    If a specific date is not mentioned, consider the last 5 days.
+    prompt = f"""The given text is in Gujrati, Extract relevant search tags (keywords) and a date (if mentioned) from the text.
+    If a specific date is not mentioned, consider the last 365 days
     Return the response in JSON format with 'tags' and 'date' fields.
 
     Text: {user_input}
