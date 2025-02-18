@@ -178,9 +178,12 @@ def main():
                 source_lang='gujarati' if input_lang == 'gujarati' else 'english'
             )
 
+            # Translate tags to Gujarati for search
+            tags = [translate_text(tag, 'english', 'gujarati') for tag in tags]
+
             # Show extracted information
             if output_lang == 'Gujarati':
-                st.write("શોધેલા ટૅગ્સ:", [translate_text(tag, 'english', 'gujarati') for tag in tags])
+                st.write("શોધેલા ટૅગ્સ:", tags)
                 st.write("તારીખ સીમા:", f"છેલ્લા {date_range} દિવસ" if date_range else "તમામ લેખો")
             else:
                 st.write("Extracted Tags:", tags)
