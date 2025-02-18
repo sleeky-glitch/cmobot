@@ -3,15 +3,17 @@ import streamlit as st
 from deep_translator import GoogleTranslator
 import openai
 import glob
+import numpy as np
 
-# Set OpenAI API key from Streamlit secrets
+# Initialize OpenAI client with API key from Streamlit secrets
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
-# Function to load articles from text files
+# Function to load articles from the "news_articles" folder
 def load_articles():
     articles = []
     try:
-        for file in glob.glob("*.txt"):  # Adjust path if needed
+        # Adjust the path to load files from the "news_articles" folder
+        for file in glob.glob("news_articles/*.txt"):
             with open(file, "r", encoding="utf-8") as f:
                 content = f.read()
                 # Extract title, date, link, and content
@@ -32,25 +34,25 @@ def load_articles():
         st.error(f"Error loading articles: {e}")
     return articles
 
+# Function to get embedding
+def get_embedding(text):
+    response = openai.Embedding.create(
+        model="text-embedding-ada-002",
+        input=text
+    )
+    return response['data'][0]['embedding']
+
 # Function to search articles using OpenAI embeddings
 def search_articles(query, articles):
     try:
         # Get embedding for the query
-        query_response = openai.Embedding.create(
-            input=query,
-            model="text-embedding-ada-002"
-        )
-        query_embedding = query_response['data'][0]['embedding']
+        query_embedding = get_embedding(query)
 
-        # Get embeddings for all articles
+        # Get embeddings for all articles and calculate similarities
         results = []
         for article in articles:
             article_text = f"{article['title']} {article['content']}"
-            article_response = openai.Embedding.create(
-                input=article_text,
-                model="text-embedding-ada-002"
-            )
-            article_embedding = article_response['data'][0]['embedding']
+            article_embedding = get_embedding(article_text)
 
             # Calculate similarity
             similarity = cosine_similarity(query_embedding, article_embedding)
@@ -66,7 +68,6 @@ def search_articles(query, articles):
 
 # Function to calculate cosine similarity
 def cosine_similarity(vec1, vec2):
-    import numpy as np
     dot_product = np.dot(vec1, vec2)
     norm1 = np.linalg.norm(vec1)
     norm2 = np.linalg.norm(vec2)
@@ -98,8 +99,9 @@ def main():
     query = st.text_input("Enter your search query (in English or Gujarati):")
 
     if query:
-        # Search articles
-        results = search_articles(query, st.session_state.articles)
+        with st.spinner('Searching articles...'):
+            # Search articles
+            results = search_articles(query, st.session_state.articles)
 
         if results:
             st.write(f"Found {len(results)} relevant articles:")
@@ -118,8 +120,9 @@ def main():
                     with col2:
                         st.write("**English Translation:**")
                         if st.button(f"Translate Article {i+1}", key=f"translate_{i}"):
-                            translated_content = translate_to_english(article["content"])
-                            st.write(translated_content)
+                            with st.spinner('Translating...'):
+                                translated_content = translate_to_english(article["content"])
+                                st.write(translated_content)
         else:
             st.write("No articles found for your query.")
 
