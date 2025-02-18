@@ -6,7 +6,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import time
 from typing import List, Dict, Any, Optional
 import logging
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 from dotenv import load_dotenv
 import os
 
@@ -17,19 +17,33 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def detect_language(text: str) -> str:
+    """
+    Detect if text contains Gujarati characters
+    """
+    gujarati_range = range(0x0A80, 0x0AFF)
+    for char in text:
+        if ord(char) in gujarati_range:
+            return 'gu'
+    return 'en'
+
 def translate_to_gujarati(text: str) -> str:
     """
-    Translate English text to Gujarati
+    Translate English text to Gujarati using deep_translator
     """
     try:
-        translator = Translator()
-        # Detect if the text is already in Gujarati
-        detected_lang = translator.detect(text).lang
+        # Detect language
+        detected_lang = detect_language(text)
         if detected_lang == 'gu':
             return text
 
-        translation = translator.translate(text, dest='gu')
-        return translation.text
+        # Initialize translator
+        translator = GoogleTranslator(source='en', target='gu')
+
+        # Translate text
+        translation = translator.translate(text)
+        logger.info(f"Translated '{text}' to '{translation}'")
+        return translation
     except Exception as e:
         logger.error(f"Error in translation: {e}")
         return text
