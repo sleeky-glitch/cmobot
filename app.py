@@ -52,7 +52,7 @@ def extract_tags_and_date(user_input):
     """
 
     response = get_mixtral_response(prompt)
-
+    st.write("Raw response from Mixtral:", response)
     try:
         # Extract JSON from the response
         json_str = re.search(r'\{.*\}', response)
