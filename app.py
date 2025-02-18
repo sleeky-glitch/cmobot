@@ -27,9 +27,36 @@ def translate_text(text, source_lang, target_lang):
     if not text or text.strip() == '':
         return text
 
-    translator = GoogleTranslator(source=source_lang, target=target_lang)
     try:
-        return translator.translate(text)
+        # Split text into smaller chunks to avoid translation limits
+        max_chunk_size = 4500  # Google Translate has a limit
+        chunks = []
+        current_chunk = ""
+
+        sentences = text.split('. ')
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) < max_chunk_size:
+                current_chunk += sentence + '. '
+            else:
+                chunks.append(current_chunk)
+                current_chunk = sentence + '. '
+
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        # Translate each chunk
+        translator = GoogleTranslator(source=source_lang, target=target_lang)
+        translated_chunks = []
+        for chunk in chunks:
+            try:
+                translated_chunk = translator.translate(chunk.strip())
+                translated_chunks.append(translated_chunk)
+            except Exception as e:
+                st.error(f"Translation error for chunk: {str(e)}")
+                translated_chunks.append(chunk)  # Use original chunk if translation fails
+
+        return ' '.join(translated_chunks)
+
     except Exception as e:
         st.error(f"Translation error: {str(e)}")
         return text
@@ -143,18 +170,9 @@ def search_news_articles(tags, date_range):
                         tag_combinations = get_all_tag_combinations(tags)
                         for tag_combo in tag_combinations:
                             if tag_combo.lower() in content.lower():
-                                # Extract title and link
-                                title_match = re.search(r'Title: (.*?)\n', content)
-                                link_match = re.search(r'Link: (.*?)\n', content)
-
-                                title = title_match.group(1) if title_match else "No title"
-                                link = link_match.group(1) if link_match else ""
-
                                 results.append({
-                                    'title': title,
                                     'content': content,
-                                    'date': article_date.strftime('%d-%m-%Y'),
-                                    'link': link
+                                    'date': article_date.strftime('%d-%m-%Y')
                                 })
                                 break  # Avoid duplicate articles
 
@@ -219,29 +237,56 @@ def main():
                     st.write(f"Found {len(results)} relevant articles:")
 
                 for idx, article in enumerate(results):
-                    title = article['title']
-                    content = article['content']
+                    # Split content into parts
+                    title_match = re.search(r'Title: (.*?)\n', article['content'])
+                    date_match = re.search(r'Date: (.*?)\n', article['content'])
+                    link_match = re.search(r'Link: (.*?)\n', article['content'])
+                    content_match = re.search(r'Content: (.*)', article['content'], re.DOTALL)
 
-                    # Translate if needed
-                    if output_lang == 'English':
-                        title = translate_text(title, 'gujarati', 'english')
-                        content = translate_text(content, 'gujarati', 'english')
-                        # Highlight English tags
-                        content = highlight_tags(content, original_tags)
+                    title = title_match.group(1) if title_match else "No title"
+                    date = date_match.group(1) if date_match else ""
+                    link = link_match.group(1) if link_match else ""
+                    content = content_match.group(1) if content_match else ""
+
+                    # Translate based on output language
+                    if output_lang == 'English' and detect_language(content) == 'gujarati':
+                        try:
+                            title = translate_text(title, 'gujarati', 'english')
+                            content = translate_text(content, 'gujarati', 'english')
+                            # Highlight English tags
+                            content = highlight_tags(content, original_tags)
+                        except Exception as e:
+                            st.error(f"Translation error: {str(e)}")
+                    elif output_lang == 'Gujarati' and detect_language(content) == 'english':
+                        try:
+                            title = translate_text(title, 'english', 'gujarati')
+                            content = translate_text(content, 'english', 'gujarati')
+                            # Highlight Gujarati tags
+                            content = highlight_tags(content, gujarati_tags)
+                        except Exception as e:
+                            st.error(f"Translation error: {str(e)}")
                     else:
-                        # Highlight Gujarati tags
-                        content = highlight_tags(content, gujarati_tags)
+                        # Highlight tags in original language
+                        content = highlight_tags(content,
+                                              gujarati_tags if detect_language(content) == 'gujarati'
+                                              else original_tags)
 
-                    with st.expander(f"{title} ({article['date']})"):
-                        st.markdown(content, unsafe_allow_html=True)
+                    # Display the article
+                    with st.expander(f"{title} ({date})"):
+                        # Format content with proper spacing
+                        formatted_content = f"""
+                        {content}
+                        """
+                        st.markdown(formatted_content, unsafe_allow_html=True)
 
                         # Add "View News Article" button
-                        if article['link']:
+                        if link:
                             col1, col2, col3 = st.columns([1, 2, 1])
                             with col2:
                                 button_text = "સમાચાર જુઓ" if output_lang == 'Gujarati' else "View News Article"
-                                if st.button(button_text, key=f"btn_{idx}"):
-                                    st.markdown(f"<a href='{article['link']}' target='_blank'>{article['link']}</a>",
+                                button_key = f"btn_{idx}_{hash(link)}"  # Unique key for each button
+                                if st.button(button_text, key=button_key):
+                                    st.markdown(f"<a href='{link}' target='_blank'>{link}</a>",
                                               unsafe_allow_html=True)
             else:
                 if output_lang == 'Gujarati':
