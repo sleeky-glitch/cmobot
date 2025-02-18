@@ -6,10 +6,33 @@ from sklearn.metrics.pairwise import cosine_similarity
 import time
 from typing import List, Dict, Any, Optional
 import logging
+from googletrans import Translator
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def translate_to_gujarati(text: str) -> str:
+    """
+    Translate English text to Gujarati
+    """
+    try:
+        translator = Translator()
+        # Detect if the text is already in Gujarati
+        detected_lang = translator.detect(text).lang
+        if detected_lang == 'gu':
+            return text
+
+        translation = translator.translate(text, dest='gu')
+        return translation.text
+    except Exception as e:
+        logger.error(f"Error in translation: {e}")
+        return text
 
 # Initialize OpenAI and Pinecone clients
 @st.cache_resource
@@ -73,16 +96,10 @@ def calculate_relevance_score(query_embedding: List[float],
     Calculate a combined relevance score based on embedding similarity
     """
     try:
-        # Ensure embeddings are the same length and properly shaped
         query_embedding = np.array(query_embedding).reshape(1, -1)
         result_embedding = np.array(result_embedding).reshape(1, -1)
-
-        # Calculate cosine similarity
         similarity = cosine_similarity(query_embedding, result_embedding)[0][0]
-
-        # Normalize the score between 0 and 1
         normalized_score = (similarity + 1) / 2
-
         return normalized_score
     except Exception as e:
         logger.error(f"Error in calculate_relevance_score: {e}")
@@ -107,39 +124,38 @@ def filter_relevant_results(results: List[Any],
     Filter results based on relevance criteria
     """
     filtered_results = []
-
     for match in results:
         try:
             result_embedding = match.values
-
             if result_embedding and len(result_embedding) > 0:
                 relevance_score = calculate_relevance_score(
                     query_embedding,
                     result_embedding,
                     match.metadata.get('content', '')
                 )
-
                 if relevance_score >= min_similarity:
                     match.score = relevance_score
                     filtered_results.append(match)
         except Exception as e:
             logger.error(f"Error processing match in filter_relevant_results: {e}")
             continue
-
     return filtered_results
 
 def search_articles(query_text: str, top_k: int = 5) -> List[Any]:
     """
-    Enhanced search for articles using the query text with better relevance filtering
+    Enhanced search for articles using the query text with translation support
     """
     try:
-        # Get embedding for the query
-        query_embedding = safe_get_embedding(query_text)
+        # Translate query to Gujarati if it's in English
+        gujarati_query = translate_to_gujarati(query_text)
+        logger.info(f"Translated query: {gujarati_query}")
+
+        # Get embedding for the Gujarati query
+        query_embedding = safe_get_embedding(gujarati_query)
         if not query_embedding:
             st.error("Could not generate embedding for your query.")
             return []
 
-        # Search in Pinecone with higher initial top_k to allow for filtering
         initial_top_k = min(top_k * 3, 20)
         results = index.query(
             vector=query_embedding,
@@ -151,14 +167,12 @@ def search_articles(query_text: str, top_k: int = 5) -> List[Any]:
             st.warning("No results found for your query.")
             return []
 
-        # Filter results for relevance
         filtered_results = filter_relevant_results(results.matches, query_embedding)
 
         if not filtered_results:
             st.warning("No relevant results found after filtering.")
             return []
 
-        # Sort by relevance score and take top_k
         filtered_results.sort(key=lambda x: x.score, reverse=True)
         return filtered_results[:top_k]
 
@@ -173,7 +187,6 @@ def get_chat_response(messages: List[Dict[str, str]],
     Get response from ChatGPT with language preference
     """
     try:
-        # Add language preference instruction
         if lang_pref == "Gujarati Only":
             messages.append({"role": "system", "content": "Please respond in Gujarati only."})
         elif lang_pref == "English Only":
@@ -197,8 +210,7 @@ def display_article(match: Any, index: int, query: str) -> bool:
     """
     try:
         relevance_score = getattr(match, 'score', 0)
-
-        if relevance_score >= 0.6:  # Only display articles with good relevance
+        if relevance_score >= 0.6:
             with st.container():
                 col1, col2 = st.columns([4, 1])
                 with col1:
@@ -206,7 +218,6 @@ def display_article(match: Any, index: int, query: str) -> bool:
                 with col2:
                     st.markdown(f"Relevance: {relevance_score:.2f}")
 
-                # Display article content with highlighting
                 content = match.metadata.get('content', 'No content available')
                 st.markdown(
                     f"""<div style='background-color: #f0f2f6; padding: 10px;
@@ -230,7 +241,7 @@ def initialize_session_state():
     """
     if 'messages' not in st.session_state:
         st.session_state.messages = [
-            {"role": "system", "content": "You are a helpful assistant specializing in Gujarati news. You can understand and respond in both Gujarati and English. Provide concise and relevant responses based on the news articles provided."}
+            {"role": "system", "content": "You are a helpful assistant specializing in Gujarati news. You can understand and respond in both Gujarati and English. When searching, English queries will be translated to Gujarati for better results."}
         ]
     if 'top_k' not in st.session_state:
         st.session_state.top_k = 3
@@ -246,27 +257,23 @@ def render_sidebar():
     with st.sidebar:
         st.header("Search Options")
 
-        # Number of results slider
         st.session_state.top_k = st.slider(
             "Number of results",
             1, 10, 3,
             help="Maximum number of articles to display"
         )
 
-        # Language preference
         st.session_state.lang_pref = st.radio(
             "Preferred Response Language",
             ["Bilingual", "Gujarati Only", "English Only"]
         )
 
-        # Relevance threshold slider
         st.session_state.relevance_threshold = st.slider(
             "Relevance Threshold",
             0.0, 1.0, 0.6,
             help="Minimum relevance score for articles to be displayed"
         )
 
-        # Clear chat button
         if st.button("Clear Chat History"):
             st.session_state.messages = [
                 {"role": "system", "content": "You are a helpful assistant specializing in Gujarati news. You can understand and respond in both Gujarati and English."}
@@ -286,47 +293,43 @@ def main():
     st.title("ગુજરાતી સમાચાર શોધ 🔍")
     st.subheader("Gujarati News Search with AI")
 
-    # Initialize session state
     initialize_session_state()
-
-    # Render sidebar
     render_sidebar()
 
-    # Chat input
     user_input = st.chat_input("Enter your query in Gujarati or English...")
 
     if user_input:
-        # Add user message to chat history
+        # Translate user input if it's in English
+        gujarati_query = translate_to_gujarati(user_input)
+
+        # Show translation if query was changed
+        if gujarati_query != user_input:
+            st.info(f"Searching for: {gujarati_query}")
+
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-        # Search for relevant articles
         with st.spinner('Searching through news articles...'):
-            results = search_articles(user_input, top_k=st.session_state.top_k)
+            results = search_articles(gujarati_query, top_k=st.session_state.top_k)
 
         if results:
-            # Prepare context from search results
             context = "Based on the following news articles:\n\n"
             for i, match in enumerate(results, 1):
                 context += f"{i}. {match.metadata['content']}\n\n"
 
-            # Add context to the conversation
             context_message = {"role": "system", "content": context}
             messages = st.session_state.messages + [context_message]
 
-            # Get AI response
             with st.spinner('Generating response...'):
                 ai_response = get_chat_response(messages, st.session_state.lang_pref)
 
             if ai_response:
                 st.session_state.messages.append({"role": "assistant", "content": ai_response})
 
-        # Display chat history
         for message in st.session_state.messages:
             if message["role"] != "system":
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
 
-        # Display related articles in expander
         if results:
             with st.expander("View Related Articles", expanded=False):
                 displayed_count = 0
