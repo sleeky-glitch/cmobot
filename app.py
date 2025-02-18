@@ -1,23 +1,28 @@
 import streamlit as st
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
-from itertools import combinations
-import os
+from huggingface_hub import InferenceClient
 import json
 from datetime import datetime, timedelta
+import os
 import re
+from itertools import combinations
 
-# Initialize Mixtral
-def initialize_model():
-    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mixtral-8x7B-Instruct-v0.1")
-    model = AutoModelForCausalLM.from_pretrained(
-        "mistralai/Mixtral-8x7B-Instruct-v0.1",
-        torch_dtype=torch.float16,
-        device_map="auto"
-    )
-    return model, tokenizer
+# Initialize Hugging Face client
+def initialize_client():
+    try:
+        client = InferenceClient(
+            model="mistralai/Mixtral-8x7B-Instruct-v0.1",
+            token=st.secrets["huggingface_token"]
+        )
+        return client
+    except Exception as e:
+        st.error(f"Error initializing Hugging Face client: {str(e)}")
+        st.error("Please ensure you have set up your secrets.toml file correctly.")
+        return None
 
-def extract_tags_and_date(query, model, tokenizer):
+def extract_tags_and_date(query, client):
+    if not client:
+        return [], 7
+
     prompt = f"""
     Extract relevant search tags and date range from the following query: "{query}"
     Return the response in JSON format with keys 'tags' and 'date_range'.
@@ -25,15 +30,44 @@ def extract_tags_and_date(query, model, tokenizer):
     For "road accidents in gujarat last week" return {{"tags": ["road", "accident", "gujarat"], "date_range": 7}}
     """
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    outputs = model.generate(**inputs, max_length=200)
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
     try:
-        result = json.loads(response)
-        return result['tags'], result['date_range']
-    except:
-        return [], 7  # default to week if parsing fails
+        response = client.text_generation(
+            prompt,
+            max_new_tokens=200,
+            temperature=0.3,
+            return_full_text=False
+        )
+
+        try:
+            result = json.loads(response)
+            return result['tags'], result['date_range']
+        except json.JSONDecodeError:
+            # Fallback to regex extraction
+            return extract_tags_with_regex(query)
+    except Exception as e:
+        st.error(f"Error calling Hugging Face API: {str(e)}")
+        return extract_tags_with_regex(query)
+
+def extract_tags_with_regex(query):
+    # Default date range is 7 days
+    date_range = 7
+
+    # Extract date range from query
+    if 'day' in query.lower() or 'days' in query.lower():
+        match = re.search(r'(\d+)\s*days?', query.lower())
+        if match:
+            date_range = int(match.group(1))
+    elif 'week' in query.lower():
+        date_range = 7
+    elif 'month' in query.lower():
+        date_range = 30
+
+    # Extract potential tags
+    words = query.lower().split()
+    stop_words = {'news', 'last', 'days', 'week', 'month', 'the', 'in', 'on', 'at', 'from', 'to'}
+    tags = [word for word in words if len(word) > 3 and word not in stop_words]
+
+    return tags, date_range
 
 def get_all_tag_combinations(tags):
     all_combinations = []
@@ -46,45 +80,54 @@ def search_news_articles(tags, date_range):
     current_date = datetime.now()
     start_date = current_date - timedelta(days=date_range)
 
-    # Read all news files in the directory
-    for filename in os.listdir('news_articles'):
-        if filename.endswith('.txt'):
-            with open(os.path.join('news_articles', filename), 'r', encoding='utf-8') as f:
-                content = f.read()
+    try:
+        # Read all news files in the directory
+        for filename in os.listdir('news_articles'):
+            if filename.endswith('.txt'):
+                with open(os.path.join('news_articles', filename), 'r', encoding='utf-8') as f:
+                    content = f.read()
 
-                # Extract article date
-                date_match = re.search(r'Date: (\d{2}-\d{2}-\d{4})', content)
-                if date_match:
-                    article_date = datetime.strptime(date_match.group(1), '%d-%m-%Y')
+                    # Extract article date
+                    date_match = re.search(r'Date: (\d{2}-\d{2}-\d{4})', content)
+                    if date_match:
+                        article_date = datetime.strptime(date_match.group(1), '%d-%m-%Y')
 
-                    # Check if article is within date range
-                    if start_date <= article_date <= current_date:
-                        # Search for all tag combinations
-                        tag_combinations = get_all_tag_combinations(tags)
-                        for tag_combo in tag_combinations:
-                            if tag_combo.lower() in content.lower():
-                                # Extract title
-                                title_match = re.search(r'Title: (.*?)\n', content)
-                                title = title_match.group(1) if title_match else "No title"
+                        # Check if article is within date range
+                        if start_date <= article_date <= current_date:
+                            # Search for all tag combinations
+                            tag_combinations = get_all_tag_combinations(tags)
+                            for tag_combo in tag_combinations:
+                                if tag_combo.lower() in content.lower():
+                                    # Extract title and link
+                                    title_match = re.search(r'Title: (.*?)\n', content)
+                                    link_match = re.search(r'Link: (.*?)\n', content)
 
-                                results.append({
-                                    'title': title,
-                                    'content': content,
-                                    'date': article_date.strftime('%d-%m-%Y')
-                                })
-                                break  # Avoid duplicate articles
+                                    title = title_match.group(1) if title_match else "No title"
+                                    link = link_match.group(1) if link_match else ""
+
+                                    results.append({
+                                        'title': title,
+                                        'content': content,
+                                        'date': article_date.strftime('%d-%m-%Y'),
+                                        'link': link
+                                    })
+                                    break  # Avoid duplicate articles
+
+    except Exception as e:
+        st.error(f"Error reading news files: {str(e)}")
+        return []
 
     return results
 
 def main():
     st.title("Gujarati News Search Bot")
 
-    # Initialize model (you might want to cache this)
+    # Initialize client (with caching)
     @st.cache_resource
-    def load_model():
-        return initialize_model()
+    def load_client():
+        return initialize_client()
 
-    model, tokenizer = load_model()
+    client = load_client()
 
     # User input
     query = st.text_input("Enter your news query (e.g., 'cricket news in last 5 days')")
@@ -92,7 +135,11 @@ def main():
     if query:
         with st.spinner("Processing query..."):
             # Extract tags and date range
-            tags, date_range = extract_tags_and_date(query, model, tokenizer)
+            tags, date_range = extract_tags_and_date(query, client)
+
+            # Show extracted information
+            st.write("Extracted Tags:", tags)
+            st.write("Date Range:", f"Last {date_range} days")
 
             # Search for articles
             results = search_news_articles(tags, date_range)
@@ -103,11 +150,10 @@ def main():
                 for idx, article in enumerate(results):
                     with st.expander(f"{article['title']} ({article['date']})"):
                         st.write(article['content'])
+                        if article['link']:
+                            st.markdown(f"[Read full article]({article['link']})")
             else:
                 st.write("No articles found matching your query.")
 
 if __name__ == "__main__":
     main()
-
-# Created/Modified files during execution:
-# None (reads from existing news_articles/*.txt files)
