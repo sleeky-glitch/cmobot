@@ -4,6 +4,7 @@ from deep_translator import GoogleTranslator
 from openai import OpenAI
 import glob
 import numpy as np
+import textwrap
 
 # Initialize OpenAI client with API key from Streamlit secrets
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
@@ -12,7 +13,6 @@ client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 def load_articles():
     articles = []
     try:
-        # Adjust the path to load files from the "news_articles" folder
         for file in glob.glob("news_articles/*.txt"):
             with open(file, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -33,11 +33,17 @@ def load_articles():
         st.error(f"Error loading articles: {e}")
     return articles
 
+# Function to chunk text into smaller pieces
+def chunk_text(text, max_chars=2000):
+    return textwrap.wrap(text, max_chars, break_long_words=False)
+
 # Function to get embedding using new OpenAI API
 def get_embedding(text):
+    # Truncate text to avoid token limit
+    truncated_text = text[:4000]  # Approximate limit to stay within token bounds
     response = client.embeddings.create(
         model="text-embedding-ada-002",
-        input=text
+        input=truncated_text
     )
     return response.data[0].embedding
 
@@ -50,12 +56,13 @@ def search_articles(query, articles):
         # Get embeddings for all articles and calculate similarities
         results = []
         for article in articles:
-            article_text = f"{article['title']} {article['content']}"
-            article_embedding = get_embedding(article_text)
+            # Create a summary text combining title and first part of content
+            article_summary = f"{article['title']} {article['content'][:2000]}"
+            article_embedding = get_embedding(article_summary)
 
             # Calculate similarity
             similarity = cosine_similarity(query_embedding, article_embedding)
-            if similarity > 0.7:  # Adjust threshold as needed
+            if similarity > 0.6:  # Lowered threshold slightly
                 results.append((article, similarity))
 
         # Sort results by similarity
@@ -75,8 +82,16 @@ def cosine_similarity(vec1, vec2):
 # Function to translate Gujarati to English
 def translate_to_english(text):
     try:
-        translated_text = GoogleTranslator(source="gujarati", target="english").translate(text)
-        return translated_text
+        # Split text into smaller chunks for translation
+        chunks = chunk_text(text)
+        translated_chunks = []
+
+        for chunk in chunks:
+            translated_chunk = GoogleTranslator(source="gujarati", target="english").translate(chunk)
+            translated_chunks.append(translated_chunk)
+
+        # Join all translated chunks
+        return " ".join(translated_chunks)
     except Exception as e:
         st.error(f"Translation failed: {e}")
         return text
