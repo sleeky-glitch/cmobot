@@ -24,6 +24,9 @@ def translate_text(text, source_lang, target_lang):
     if source_lang == target_lang:
         return text
 
+    if not text or text.strip() == '':
+        return text
+
     translator = GoogleTranslator(source=source_lang, target=target_lang)
     try:
         return translator.translate(text)
@@ -31,6 +34,7 @@ def translate_text(text, source_lang, target_lang):
         st.error(f"Translation error: {str(e)}")
         return text
 
+# Initialize Hugging Face client
 def initialize_client():
     try:
         client = InferenceClient(
@@ -44,6 +48,7 @@ def initialize_client():
         return None
 
 def extract_tags_and_date(query, client, source_lang='english'):
+    # Translate query to English if it's in Gujarati
     query_en = query if source_lang == 'english' else translate_text(query, 'gujarati', 'english')
 
     prompt = f"""
@@ -74,7 +79,10 @@ def extract_tags_and_date(query, client, source_lang='english'):
         return extract_tags_with_regex(query_en)
 
 def extract_tags_with_regex(query):
+    # Default date range is None if no date is mentioned
     date_range = None
+
+    # Extract date range from query
     if 'day' in query.lower() or 'days' in query.lower():
         match = re.search(r'(\d+)\s*days?', query.lower())
         if match:
@@ -84,6 +92,7 @@ def extract_tags_with_regex(query):
     elif 'month' in query.lower():
         date_range = 30
 
+    # Extract potential tags
     words = query.lower().split()
     stop_words = {'news', 'last', 'days', 'week', 'month', 'the', 'in', 'on', 'at', 'from', 'to', 'સમાચાર', 'છેલ્લા'}
     tags = [word for word in words if len(word) > 3 and word not in stop_words]
@@ -96,46 +105,58 @@ def get_all_tag_combinations(tags):
         all_combinations.extend(combinations(tags, r))
     return [' '.join(combo) for combo in all_combinations]
 
+def highlight_tags(content, tags):
+    """Highlight tags in the content using HTML."""
+    highlighted_content = content
+    for tag in tags:
+        if tag and tag.strip():
+            # Create case-insensitive pattern
+            pattern = re.compile(re.escape(tag.strip()), re.IGNORECASE)
+            highlighted_content = pattern.sub(
+                f'<span style="background-color: yellow">{tag}</span>',
+                highlighted_content
+            )
+    return highlighted_content
+
 def search_news_articles(tags, date_range):
     results = []
     current_date = datetime.now()
     start_date = current_date - timedelta(days=date_range) if date_range else None
 
     try:
+        # Read all news files in the directory
         for filename in os.listdir('news_articles'):
             if filename.endswith('.txt'):
                 with open(os.path.join('news_articles', filename), 'r', encoding='utf-8') as f:
                     content = f.read()
 
+                    # Extract article date
                     date_match = re.search(r'Date: (\d{2}-\d{2}-\d{4})', content)
                     if date_match:
                         article_date = datetime.strptime(date_match.group(1), '%d-%m-%Y')
 
+                        # Check if article is within date range (if date_range is specified)
                         if start_date and not (start_date <= article_date <= current_date):
                             continue
 
+                        # Search for all tag combinations
                         tag_combinations = get_all_tag_combinations(tags)
                         for tag_combo in tag_combinations:
                             if tag_combo.lower() in content.lower():
+                                # Extract title and link
                                 title_match = re.search(r'Title: (.*?)\n', content)
                                 link_match = re.search(r'Link: (.*?)\n', content)
 
                                 title = title_match.group(1) if title_match else "No title"
                                 link = link_match.group(1) if link_match else ""
 
-                                # Highlight tags in content
-                                highlighted_content = content
-                                for tag in tags:
-                                    pattern = re.compile(re.escape(tag), re.IGNORECASE)
-                                    highlighted_content = pattern.sub(f"**{tag}**", highlighted_content)
-
                                 results.append({
                                     'title': title,
-                                    'content': highlighted_content,
+                                    'content': content,
                                     'date': article_date.strftime('%d-%m-%Y'),
                                     'link': link
                                 })
-                                break
+                                break  # Avoid duplicate articles
 
     except Exception as e:
         st.error(f"Error reading news files: {str(e)}")
@@ -146,6 +167,7 @@ def search_news_articles(tags, date_range):
 def main():
     st.title("Bilingual News Search Bot")
 
+    # Initialize client and translators
     @st.cache_resource
     def load_resources():
         client = initialize_client()
@@ -154,21 +176,28 @@ def main():
 
     client, en_to_gu, gu_to_en = load_resources()
 
+    # Language selection
     output_lang = st.radio("Select output language:", ['English', 'Gujarati'])
 
+    # User input
     query = st.text_input("Enter your query in English or Gujarati (દાખલા તરીકે: 'ક્રિકેટ સમાચાર' અથવા 'cricket news')")
 
     if query:
         with st.spinner("Processing query..."):
+            # Detect input language
             input_lang = detect_language(query)
 
+            # Extract tags and date range
             tags, date_range = extract_tags_and_date(
                 query,
                 client,
                 source_lang='gujarati' if input_lang == 'gujarati' else 'english'
             )
 
-            # Always translate tags to Gujarati for search
+            # Store original English tags before translation
+            original_tags = tags.copy() if input_lang == 'english' else [translate_text(tag, 'gujarati', 'english') for tag in tags]
+
+            # Translate tags to Gujarati for search
             gujarati_tags = [translate_text(tag, 'english', 'gujarati') for tag in tags]
 
             # Show extracted information
@@ -176,12 +205,13 @@ def main():
                 st.write("શોધેલા ટૅગ્સ:", gujarati_tags)
                 st.write("તારીખ સીમા:", f"છેલ્લા {date_range} દિવસ" if date_range else "તમામ લેખો")
             else:
-                st.write("Extracted Tags:", tags)
+                st.write("Extracted Tags:", original_tags)
                 st.write("Date Range:", f"Last {date_range} days" if date_range else "All articles")
 
-            # Search using Gujarati tags
+            # Search for articles
             results = search_news_articles(gujarati_tags, date_range)
 
+            # Display results
             if results:
                 if output_lang == 'Gujarati':
                     st.write(f"કુલ {len(results)} લેખો મળ્યા:")
@@ -193,18 +223,26 @@ def main():
                     content = article['content']
 
                     # Translate if needed
-                    if output_lang == 'English' and input_lang == 'gujarati':
+                    if output_lang == 'English':
                         title = translate_text(title, 'gujarati', 'english')
                         content = translate_text(content, 'gujarati', 'english')
-                    elif output_lang == 'Gujarati' and input_lang == 'english':
-                        title = translate_text(title, 'english', 'gujarati')
-                        content = translate_text(content, 'english', 'gujarati')
+                        # Highlight English tags
+                        content = highlight_tags(content, original_tags)
+                    else:
+                        # Highlight Gujarati tags
+                        content = highlight_tags(content, gujarati_tags)
 
                     with st.expander(f"{title} ({article['date']})"):
-                        st.markdown(content)  # Using markdown to render bold text
+                        st.markdown(content, unsafe_allow_html=True)
+
+                        # Add "View News Article" button
                         if article['link']:
-                            link_text = "લેખની લિંક" if output_lang == 'Gujarati' else "Link to Article"
-                            st.markdown(f"[{link_text}]({article['link']})")
+                            col1, col2, col3 = st.columns([1, 2, 1])
+                            with col2:
+                                button_text = "સમાચાર જુઓ" if output_lang == 'Gujarati' else "View News Article"
+                                if st.button(button_text, key=f"btn_{idx}"):
+                                    st.markdown(f"<a href='{article['link']}' target='_blank'>{article['link']}</a>",
+                                              unsafe_allow_html=True)
             else:
                 if output_lang == 'Gujarati':
                     st.write("કોઈ લેખ મળ્યા નથી.")
@@ -213,4 +251,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
