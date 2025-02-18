@@ -111,7 +111,7 @@ def list_reference_documents():
       if text_files:
           for txt in text_files:
               doc_name = os.path.splitext(txt)[0]
-              st.markdown(f'- [{doc_name}](./news_articles/{,txt})', unsafe_allow_html=True)
+              st.markdown(f'- [{doc_name}](./news_articles/{.txt})', unsafe_allow_html=True)
       else:
           st.write("No reference documents found.")
   except Exception as e:
